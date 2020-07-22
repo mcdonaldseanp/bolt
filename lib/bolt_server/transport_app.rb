@@ -17,7 +17,7 @@ require 'bolt_server/pe/pal'
 module BoltServer
   class TransportApp < Sinatra::Base
     # This disables Sinatra's error page generation
-    set :show_exceptions, false
+    set :show_exceptions, true
 
     # These partial schemas are reused to build multiple request schemas
     PARTIAL_SCHEMAS = %w[target-any target-ssh target-winrm task].freeze
@@ -34,7 +34,9 @@ module BoltServer
     ].freeze
 
     def initialize(config)
+      Logging.logger[self].info("Initializing service")
       @config = config
+      Logging.logger[self].info("Parsing Schemas")
       @schemas = Hash[REQUEST_SCHEMAS.map do |basename|
         [basename, JSON.parse(File.read(File.join(__dir__, ['schemas', "#{basename}.json"])))]
       end]
@@ -45,13 +47,17 @@ module BoltServer
         JSON::Validator.add_schema(shared_schema)
       end
 
+      Logging.logger[self].info("Creating Executor")
       @executor = Bolt::Executor.new(0)
 
+      Logging.logger[self].info("Creating Executor")
       @file_cache = BoltServer::FileCache.new(@config).setup
 
+      Logging.logger[self].info("Creating PAL Mutex")
       # This is needed until the PAL is threadsafe.
       @pal_mutex = Mutex.new
 
+      Logging.logger[self].info("Calling super")
       super(nil)
     end
 
@@ -65,6 +71,7 @@ module BoltServer
     def validate_schema(schema, body)
       schema_error = JSON::Validator.fully_validate(schema, body)
       if schema_error.any?
+        Logging.logger[self].info("ERROR: Schema validation failure")
         Bolt::Error.new("There was an error validating the request body.",
                         'boltserver/schema-error',
                         schema_error)
@@ -80,11 +87,13 @@ module BoltServer
     # as a single result object. Set `aggregate` to treat it as a set
     # of results with length 1 instead.
     def result_set_to_status_hash(result_set, aggregate: false)
+      Logging.logger[self].info("Aggregating result in to a status hash")
       scrubbed_results = result_set.map do |result|
         scrub_stack_trace(result.status_hash)
       end
 
       if aggregate || scrubbed_results.length > 1
+        Logging.logger[self].info("Aggregating multiple results")
         # For actions that act on multiple targets, construct a status hash for the aggregate result
         all_succeeded = scrubbed_results.all? { |r| r[:status] == 'success' }
         {
@@ -98,11 +107,15 @@ module BoltServer
     end
 
     def run_task(target, body)
+      Logging.logger[self].info("Running Task")
+      Logging.logger[self].info("Validating Schema")
       error = validate_schema(@schemas["action-run_task"], body)
       return [], error unless error.nil?
 
+      Logging.logger[self].info("Fetching task files")
       task_data = body['task']
       task = Bolt::Task::PuppetServer.new(task_data['name'], task_data['metadata'], task_data['files'], @file_cache)
+      Logging.logger[self].info("Executing run_task")
       parameters = body['parameters'] || {}
       [@executor.run_task(target, task, parameters), nil]
     end
@@ -182,19 +195,28 @@ module BoltServer
     end
 
     def in_pe_pal_env(environment)
+      Logging.logger[self].info("Initializing PE PAL environment")
       if environment.nil?
+        Logging.logger[self].warn("FAILED: environment missing from call to in_pe_pal_env!")
         [400, '`environment` is a required argument']
       else
+        Logging.logger[self].info("Synchronizing on PAL mutex")
         @pal_mutex.synchronize do
           begin
+            Logging.logger[self].info("Initializing PAL object with environment")
             pal = BoltServer::PE::PAL.new({}, environment)
             yield pal
           rescue Puppet::Environments::EnvironmentNotFound
+            Logging.logger[self].info("ERROR: Cannot find environment")
             [400, {
               "class" => 'bolt/unknown-environment',
               "message" => "Environment #{environment} not found"
             }.to_json]
           rescue Bolt::Error => e
+            Logging.logger[self].warn("ERROR: Bolt error #{e.backtrace}")
+            [400, e.to_json]
+          rescue StandardError => e
+            Logging.logger[self].warn("ERROR: Unkown error #{e.backtrace}")
             [400, e.to_json]
           end
         end
@@ -202,12 +224,14 @@ module BoltServer
     end
 
     def pe_plan_info(pal, module_name, plan_name)
+      Logging.logger[self].info("Parsing plan name and fetching info")
       # Handle case where plan name is simply module name with special `init.pp` plan
       plan_name = if plan_name == 'init' || plan_name.nil?
                     module_name
                   else
                     "#{module_name}::#{plan_name}"
                   end
+      Logging.logger[self].info("Executing PAL function to fetch plan info")
       plan_info = pal.get_plan_info(plan_name)
       # Path to module is meaningless in PE
       plan_info.delete('module')
@@ -230,7 +254,9 @@ module BoltServer
     end
 
     get '/admin/status' do
+      Logging.logger[self].info("Fetching puma stats...")
       stats = Puma.stats
+      Logging.logger[self].info("Fetched puma stats, returning")
       [200, stats.is_a?(Hash) ? stats.to_json : stats]
     end
 
@@ -247,6 +273,7 @@ module BoltServer
     ].freeze
 
     def make_ssh_target(target_hash)
+      Logging.logger[self].info("Creating Target")
       defaults = {
         'host-key-check' => false
       }
@@ -262,25 +289,32 @@ module BoltServer
         opts['private-key'] = { 'key-data' => private_key_content }
       end
 
+      Logging.logger[self].info("Initializing Target Object")
       Bolt::Target.new(target_hash['hostname'], opts)
     end
 
     post '/ssh/:action' do
+      Logging.logger[self].info("Executing action #{params[:action]}")
       not_found unless ACTIONS.include?(params[:action])
 
+      Logging.logger[self].info("Parsing JSON input")
       content_type :json
       body = JSON.parse(request.body.read)
 
+      Logging.logger[self].info("Validating Schema")
       error = validate_schema(@schemas["transport-ssh"], body)
       return [400, error.to_json] unless error.nil?
 
+      Logging.logger[self].info("Creating SSH targets")
       targets = (body['targets'] || [body['target']]).map do |target|
         make_ssh_target(target)
       end
 
+      Logging.logger[self].info("Calling #{params[:action]}")
       result_set, error = method(params[:action]).call(targets, body)
       return [400, error.to_json] unless error.nil?
 
+      Logging.logger[self].info("Returning result")
       aggregate = body['target'].nil?
       [200, result_set_to_status_hash(result_set, aggregate: aggregate).to_json]
     end
@@ -329,7 +363,9 @@ module BoltServer
     # @param environment [String] the environment to fetch the list of plans from
     # @param metadata [Boolean] Set to true to fetch all metadata for each plan. Defaults to false
     get '/plans' do
+      Logging.logger[self].info("Beginning plan metadata GET operation")
       in_pe_pal_env(params['environment']) do |pal|
+        Logging.logger[self].info("Initialized Puppet PAL, fetching plan list...")
         plans = pal.list_plans.flatten
         if params['metadata']
           plan_info = plans.each_with_object({}) do |full_name, acc|
@@ -339,6 +375,7 @@ module BoltServer
           end
           [200, plan_info.to_json]
         else
+          Logging.logger[self].info("Fetched plans, returning list")
           # We structure this array of plans to be an array of hashes so that it matches the structure
           # returned by the puppetserver API that serves data like this. Structuring the output this way
           # makes switching between puppetserver and bolt-server easier, which makes changes to switch
@@ -349,15 +386,18 @@ module BoltServer
     end
 
     error 404 do
+      Logging.logger[self].warn("Returning 404")
       err = Bolt::Error.new("Could not find route #{request.path}",
                             'boltserver/not-found')
       [404, err.to_json]
     end
 
     error 500 do
+      Logging.logger[self].warn("Returning 500")
       e = env['sinatra.error']
       err = Bolt::Error.new("500: Unknown error: #{e.message}",
                             'boltserver/server-error')
+      Logging.logger[self].warn("500 error caused by #{e.message}")
       [500, err.to_json]
     end
   end

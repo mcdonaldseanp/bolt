@@ -36,7 +36,9 @@ module BoltServer
       @logger = Logging.logger[self]
       @cache_dir_mutex = cache_dir_mutex
 
+      @logger.info("Initializing file cache")
       if do_purge
+        @logger.info("Setting up purge timer")
         @purge = Concurrent::TimerTask.new(execution_interval: purge_interval,
                                            timeout_interval: purge_timeout,
                                            run_now: true) { expire(purge_ttl) }
@@ -170,8 +172,11 @@ module BoltServer
     end
 
     def expire(purge_ttl)
+      @logger.info("Checking for expired dirs")
       expired_time = Time.now - purge_ttl
+      @logger.info("Locking cache dir for purge")
       @cache_dir_mutex.with_write_lock do
+        @logger.info("Checking for dirs to purge")
         Dir.glob(File.join(@cache_dir, '*')).select { |f| File.directory?(f) }.each do |dir|
           if (mtime = File.mtime(dir)) < expired_time && dir != tmppath
             @logger.debug("Removing #{dir}, last used at #{mtime}")

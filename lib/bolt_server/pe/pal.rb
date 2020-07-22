@@ -24,6 +24,7 @@ module BoltServer
       # set codedir in this way: when we try to load and interpolate the modulepath it
       # won't correctly load.
       def with_pe_pal_init_settings(codedir, environmentpath, basemodulepath)
+        Logging.logger[self].info("Initializing puppet settings")
         Dir.mktmpdir('pe-bolt') do |dir|
           cli = []
           Puppet::Settings::REQUIRED_APP_SETTINGS.each do |setting|
@@ -32,7 +33,9 @@ module BoltServer
           end
           cli << "--environmentpath" << environmentpath
           cli << "--basemodulepath" << basemodulepath
+          Logging.logger[self].info("Clearing puppet settings")
           Puppet.settings.send(:clear_everything_for_tests)
+          Logging.logger[self].info("Re-initializing settings")
           Puppet.initialize_settings(cli)
           yield
           # Ensure the puppet settings go back to what bolt expects after
@@ -42,6 +45,7 @@ module BoltServer
       end
 
       def initialize(plan_executor_config, environment_name, hiera_config = nil, max_compiles = nil)
+        Logging.logger[self].info("Initializing PAL object")
         # Bolt::PAL#initialize takes the modulepath as its first argument, but we
         # want to customize it later, so we pass an empty value:
         super([], hiera_config, max_compiles)
@@ -51,8 +55,10 @@ module BoltServer
         basemodulepath = plan_executor_config['basemodulepath'] || "#{codedir}/modules:/opt/puppetlabs/puppet/modules"
 
         with_pe_pal_init_settings(codedir, environmentpath, basemodulepath) do
+          Logging.logger[self].info("Identifying modulepath")
           modulepath_dirs = []
           modulepath_setting_from_bolt = nil
+          Logging.logger[self].info("Getting Environment")
           environment = Puppet.lookup(:environments).get!(environment_name)
           path_to_env = environment.configuration.path_to_env
 
@@ -72,6 +78,7 @@ module BoltServer
             modulepath_setting_from_bolt = Bolt::Util.read_optional_yaml_hash(bolt_yaml, 'config')['modulepath']
           end
 
+          Logging.logger[self].info("Fetching modulepath from environment")
           # If we loaded a bolt.yaml in the environment root and it contained a modulepath setting:
           # we will use that modulepath rather than the one loaded through puppet. modulepath will
           # be the _only_ setting that will work from bolt.yaml in plans in PE.
@@ -90,6 +97,7 @@ module BoltServer
             modulepath_dirs = environment.modulepath
           end
 
+          Logging.logger[self].info("Setting modulepath")
           # A new modulepath is created from scratch (rather than using super's @modulepath)
           # so that we can have full control over all the entries in modulepath. In the future
           # it's likely we will need to preceed _both_ Bolt::PAL::BOLTLIB_PATH _and_
