@@ -18,6 +18,7 @@ module BoltServer
   class TransportApp < Sinatra::Base
     # This disables Sinatra's error page generation
     set :show_exceptions, true
+    set :environment, :development
 
     # These partial schemas are reused to build multiple request schemas
     PARTIAL_SCHEMAS = %w[target-any target-ssh target-winrm task].freeze
@@ -56,6 +57,9 @@ module BoltServer
       Logging.logger[self].info("Creating PAL Mutex")
       # This is needed until the PAL is threadsafe.
       @pal_mutex = Mutex.new
+
+      @error_log = ::File.new("/tmp/bolt_server_error.log","a+")
+      @error_log.sync = true
 
       Logging.logger[self].info("Calling super")
       super(nil)
@@ -238,6 +242,10 @@ module BoltServer
       plan_info
     end
 
+    before {
+      env["rack.errors"] = @error_log
+    }
+
     get '/' do
       200
     end
@@ -257,6 +265,7 @@ module BoltServer
       Logging.logger[self].info("Fetching puma stats...")
       stats = Puma.stats
       Logging.logger[self].info("Fetched puma stats, returning")
+      Logging.logger[self].info("Puma stats: #{stats.to_json}")
       [200, stats.is_a?(Hash) ? stats.to_json : stats]
     end
 
