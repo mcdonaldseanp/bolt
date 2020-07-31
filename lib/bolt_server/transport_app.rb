@@ -14,11 +14,30 @@ require 'json-schema'
 require 'puppet'
 require 'bolt_server/pe/pal'
 
+class LoggingMiddleware
+  def initialize app
+    @app = app
+  end
+
+  def call env
+    Logging.logger[self].info("Calling route")
+    @status, @headers, @response = @app.call(env)
+    Logging.logger[self].info("Returning #{@response} from route")
+    [@status, @headers, @response]
+  end
+end
+
 module BoltServer
   class TransportApp < Sinatra::Base
     # This disables Sinatra's error page generation
     set :show_exceptions, true
     set :environment, :development
+    set :dump_errors, true
+    set :raise_errors, true
+    configure :production, :development do
+      enable :logging
+    end
+    use LoggingMiddleware
 
     # These partial schemas are reused to build multiple request schemas
     PARTIAL_SCHEMAS = %w[target-any target-ssh target-winrm task].freeze
@@ -60,6 +79,8 @@ module BoltServer
 
       @error_log = ::File.new("/tmp/bolt_server_error.log","a+")
       @error_log.sync = true
+      @logger_instance = Logger.new(STDOUT)
+      @logger_instance.level = Logger::DEBUG
 
       Logging.logger[self].info("Calling super")
       super(nil)
@@ -244,6 +265,7 @@ module BoltServer
 
     before {
       env["rack.errors"] = @error_log
+      env['rack.logger'] = @logger_instance
     }
 
     get '/' do
