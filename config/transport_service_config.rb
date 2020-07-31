@@ -39,6 +39,7 @@ bind_addr << "&verify_mode=force_peer"
 bind_addr << "&ssl_cipher_filter=#{config['ssl-cipher-suites'].join(':')}"
 bind bind_addr
 
+shutdown_debug true
 threads 0, config['concurrency']
 
 impl = BoltServer::TransportApp.new(config)
