@@ -51,13 +51,21 @@ module Bolt
     attr_reader :modulepath
 
     def initialize(modulepath, hiera_config, resource_types, max_compiles = Etc.nprocessors,
-                   trusted_external = nil, apply_settings = {}, project = nil)
+                   trusted_external = nil, apply_settings = {}, project = nil, use_original_modulepath = false)
       # Nothing works without initialized this global state. Reinitializing
       # is safe and in practice only happens in tests
       self.class.load_puppet
 
       @original_modulepath = modulepath
-      @modulepath = [BOLTLIB_PATH, *modulepath, MODULES_PATH]
+      # In PE, bolt's PAL is extended for use cases like
+      # loading bolt code from an environment. use_original_modulapath
+      # allows projects building on top of bolt to control the modulepath
+      # without requiring overriding the init method.
+      if use_original_modulepath
+        @modulepath = modulepath
+      else
+        @modulepath = [BOLTLIB_PATH, *modulepath, MODULES_PATH]
+      end
       @hiera_config = hiera_config
       @trusted_external = trusted_external
       @apply_settings = apply_settings
